@@ -79,12 +79,10 @@ class SiriNextDepartureCard extends HTMLElement {
       return;
     }
 
-    // Afficher le nom de l'arrêt dans l'en-tête
-    const stopName =
+    const stopName = config.name ||
       entity.attributes.stop_name || entity.attributes.friendly_name;
     this.header.textContent = stopName;
 
-    // Récupérer les départs
     const departures = entity.attributes.departures || [];
 
     if (departures.length === 0) {
@@ -93,20 +91,21 @@ class SiriNextDepartureCard extends HTMLElement {
       return;
     }
 
-    // Vider la liste actuelle
     this.departureList.innerHTML = "";
 
-    // Limiter le nombre de départs affichés si configuré
     const limit = config.max_departures || departures.length;
     const departuresLimited = departures.slice(0, limit);
 
-    // Ajouter chaque départ à la liste
     departuresLimited.forEach((departure) => {
       const departureItem = document.createElement("div");
       departureItem.className = "departure-item";
 
-      // Obtenir l'heure de départ et calculer le délai d'attente
       const departureTime = new Date(departure.expected_departure_time);
+      const aimedDepartureTime = new Date(departure.aimed_departure_time);
+      const delay = departureTime - aimedDepartureTime;
+      const delayMinutes = Math.round(delay / 60000);
+      const delaySign = delayMinutes > 0 ? "+" : "";
+
       const now = new Date();
       const waitMinutes = Math.round((departureTime - now) / 60000);
       const formattedTime = departureTime.toLocaleTimeString([], {
@@ -114,9 +113,7 @@ class SiriNextDepartureCard extends HTMLElement {
         minute: "2-digit",
       });
 
-      // Déterminer l'icône en fonction du mode de transport
       let icon = "mdi:bus";
-      // Utiliser d'abord le mode de transport du référentiel des lignes s'il est disponible
       const transportMode = (departure.line_transport_mode || departure.vehicle_mode || "").toLowerCase();
       if (transportMode.includes("tram")) {
         icon = "mdi:tram";
@@ -136,20 +133,21 @@ class SiriNextDepartureCard extends HTMLElement {
       ) {
         icon = "mdi:ferry";
       }
-      
-      // Créer le contenu HTML pour l'élément de départ
+
       departureItem.innerHTML = `
         <div class="icon-container">
           <ha-icon icon="${icon}"></ha-icon>
         </div>
-        <div class="departure-time">${formattedTime}</div>
+        <div class="departure-time">${formattedTime} ${
+        this._show_delay ? `(${delaySign}${delayMinutes})` : ''
+      }</div>
         <div class="departure-line" style="${
           departure.line_color ? `background-color: ${departure.line_color};` : ''
         }${
           departure.line_text_color ? `color: ${departure.line_text_color};` : ''
         }">${
-          departure.line_public_code || departure.published_line_name || departure.line_ref || "-"
-        }</div>
+        departure.line_public_code || departure.published_line_name || departure.line_ref || "-"
+      }</div>
         <div class="departure-destination">${
           departure.destination_name || "Inconnu"
         }</div>
@@ -158,7 +156,6 @@ class SiriNextDepartureCard extends HTMLElement {
         }</div>
       `;
 
-      // Ajouter au DOM
       this.departureList.appendChild(departureItem);
     });
   }
@@ -168,12 +165,12 @@ class SiriNextDepartureCard extends HTMLElement {
       throw new Error("Vous devez définir une entité");
     }
     this._config = config;
+    this._show_delay = config.show_delay || false;
   }
 
   getCardSize() {
-    const config = this._config;
-    const limit = config.max_departures || 5; // par défaut 5 départs
-    return 1 + Math.min(limit, 7); // en-tête + départs (max 7 pour le calcul de taille)
+    const limit = this._config?.max_departures || 5;
+    return 1 + Math.min(limit, 7);
   }
 
   static getConfigElement() {
@@ -182,31 +179,26 @@ class SiriNextDepartureCard extends HTMLElement {
 
   static getStubConfig() {
     return {
-      entity: "",
+      entity: "sensor.siri_next_departure_card",
       max_departures: 5,
+      show_delay: false,
     };
   }
 }
 
-// Définition de l'éditeur de configuration pour Lovelace UI
 class SiriNextDepartureCardEditor extends HTMLElement {
   setConfig(config) {
     this._config = config;
     this.render();
   }
 
-  get _entity() {
-    return this._config.entity || "";
-  }
-
-  get _max_departures() {
-    return this._config.max_departures || 5;
+  set hass(hass) {
+    this._hass = hass;
+    this.render();
   }
 
   render() {
-    if (!this._config) {
-      return;
-    }
+    if (!this._config || !this._hass) return;
 
     this.innerHTML = `
       <style>
@@ -216,83 +208,92 @@ class SiriNextDepartureCardEditor extends HTMLElement {
         }
         .row {
           display: flex;
-          flex-direction: row;
-          margin: 5px 0;
           align-items: center;
+          margin: 5px 0;
         }
         .label {
           width: 130px;
           font-weight: 500;
         }
-        ha-entity-picker {
-          width: 100%;
-        }
-        ha-textfield {
-          width: 100px;
+        ha-entity-picker, ha-textfield {
+          flex: 1;
         }
       </style>
       <div class="form">
         <div class="row">
-          <label class="label">Entité:</label>
+          <label class="label">Entité :</label>
           <ha-entity-picker
-            .hass=${this.hass}
-            .value=${this._entity}
-            .configValue=${"entity"}
-            include-domains='sensor'
-            @change=${this._valueChanged}
+            .hass="${this._hass}"
+            .value="${this._config.entity || ''}"
+            .configValue="${'entity'}"
+            include-domains="sensor"
             allow-custom-entity
           ></ha-entity-picker>
         </div>
         <div class="row">
-          <label class="label">Nombre max de départs:</label>
+          <label class="label">Nom :</label>
           <ha-textfield
-            .value=${this._max_departures}
-            .configValue=${"max_departures"}
-            @input=${this._valueChanged}
+            .value="${this._config.name || ''}"
+            .configValue="${'name'}"
+            placeholder="Nom personnalisé"
+          ></ha-textfield>
+        </div>
+        <div class="row">
+          <label class="label">Max départs :</label>
+          <ha-textfield
+            .value="${this._config.max_departures || 5}"
+            .configValue="${'max_departures'}"
             type="number"
             min="1"
             max="10"
           ></ha-textfield>
         </div>
+        <div class="row">
+          <label class="label">Afficher délai :</label>
+          <ha-switch
+            .checked="${this._config.show_delay || false}"
+            .configValue="${'show_delay'}"
+          ></ha-switch>
+        </div>
       </div>
     `;
+
+    this.querySelectorAll('[configValue]').forEach((el) => {
+      el.addEventListener('change', (ev) => this._valueChanged(ev));
+      el.addEventListener('input', (ev) => this._valueChanged(ev));
+    });
   }
 
   _valueChanged(ev) {
-    if (!this._config || !this.hass) {
-      return;
-    }
-
+    if (!this._config) return;
     const target = ev.target;
-    if (!target.configValue) {
-      return;
-    }
+    const value =
+      target.type === 'checkbox' || target.tagName === 'HA-SWITCH'
+        ? target.checked
+        : target.value;
 
-    // Mettre à jour la configuration avec la nouvelle valeur
-    if (target.configValue === "max_departures") {
-      this._config.max_departures = parseInt(target.value) || 5;
-    } else {
-      this._config[target.configValue] = target.value;
+    const configValue = target.getAttribute("configValue");
+    if (configValue) {
+      this._config = {
+        ...this._config,
+        [configValue]: value,
+      };
+      this.dispatchEvent(
+        new CustomEvent("config-changed", {
+          detail: { config: this._config },
+        })
+      );
     }
-
-    // Dispatcher un événement pour informer le panneau Lovelace du changement
-    this.dispatchEvent(
-      new CustomEvent("config-changed", { detail: { config: this._config } })
-    );
   }
 }
 
-// Enregistrer la carte et l'éditeur
 customElements.define("siri-next-departure-card", SiriNextDepartureCard);
-customElements.define(
-  "siri-next-departure-card-editor",
-  SiriNextDepartureCardEditor
-);
+customElements.define("siri-next-departure-card-editor", SiriNextDepartureCardEditor);
 
 window.customCards = window.customCards || [];
 window.customCards.push({
   type: "siri-next-departure-card",
   name: "Carte des prochains départs SIRI",
-  description:
-    "Affiche les prochains départs des transports en commun à partir d'un capteur SIRI",
+  description: "Affiche les prochains départs d’un capteur SIRI",
 });
+
